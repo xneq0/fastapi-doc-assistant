@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+openai
+httpx
+numpy
+python-dotenv
+chromadb
+pypdf
+rank-bm25
+pytest
