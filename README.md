@@ -34,13 +34,16 @@ FastAPI (/ask)  ──►  检索(Chroma) ──► 拼上下文 ──► DeepS
 # 2. 确保 Ollama 在跑，并已拉 embedding 模型
 ollama pull nomic-embed-text
 
-# 3. 配置 DeepSeek key
+# 3. 同步官方文档（钉定 commit，可复现；含示例代码内联）
+./.venv/bin/python -m scripts.sync_docs
+
+# 4. 配置 DeepSeek key
 cp .env.example .env   # 然后把 DEEPSEEK_API_KEY 填进去
 
-# 4. 手动演示检索（不需要 DeepSeek key）
+# 5. 手动演示检索（不需要 DeepSeek key）
 ./.venv/bin/python -m scripts.demo_retrieval
 
-# 5. 启动服务
+# 6. 启动服务
 ./.venv/bin/uvicorn app.main:app --reload
 # 打开 http://127.0.0.1:8000/docs 交互测试
 ```
@@ -53,19 +56,50 @@ cp .env.example .env   # 然后把 DEEPSEEK_API_KEY 填进去
 | POST | /ingest | 导入 `docs/` 下的 .md/.txt/.pdf |
 | POST | /ask    | 提问，返回答案 + 引用来源 |
 
-## 检索优化实验（已完成）
+## 数据集
 
-自建 12 条评测集（问题→正确文档），指标 recall@1：
+- **语料**：FastAPI 官方 tutorial **32 篇**（钉定 commit，`scripts/sync_docs.py` 可复现，
+  含 `docs_src` 示例代码内联）。溯源见根目录 `SOURCES.md`、许可见 `LICENSE-FASTAPI.txt`（MIT）。
+- **评测集**：`eval/` 下三份 JSONL，共 52 题
+  - `dev.jsonl`（24）：**开发集**，允许据此调参
+  - `test.jsonl`（16）：**冻结的独立测试集**，仅里程碑评估，不得据此调参
+  - `unanswerable.jsonl`（12）：知识库中**没有答案**的问题（off-topic + 貌似相关但未收录）
+- 每条标注 `expected_source` 与 `evidence_quote`，问题按 semantic/task/keyword/error **四类严格均衡**
+  （dev 每类 6、test 每类 4），使 by-type 指标有意义。
 
-| 检索方式 | recall@1 |
-|----------|----------|
-| 纯向量   | 92% (11/12) |
-| 混合(BM25+向量, RRF 融合) | **100% (12/12)** |
+## 检索评测
 
-典型改进案例：问「Why do I get a 422 status code?」时，纯向量被语义带偏到
-`error_handling.md`，混合检索靠 BM25 精确匹配 `422` 正确命中 `path_params.md`。
+报告两套**互相独立**的指标（定义见 `app/eval_metrics.py`）：
 
-运行：`./.venv/bin/python -m scripts.evaluate`
+- **source**：按 source 首次出现去重后的名次——「正确文档整体排第几」（不看证据）。
+- **evidence**：不去重，第一个「来源正确且含 `evidence_quote`」的 chunk 名次——「真正能回答的证据片段排第几」，更严格。
+
+下表用**干净重建索引**（`--rebuild-index`）跑出，本地 Ollama embedding，top_n=10：
+
+| 集合 | 检索 | src@1 | src@3 | srcMRR | ev@1 | ev@3 | evMRR |
+|------|------|-------|-------|--------|------|------|-------|
+| dev  | 纯向量 | 79% | 92% | 0.856 | 54% | 71% | 0.628 |
+| dev  | **混合** | **83%** | 92% | **0.894** | 54% | 71% | **0.666** |
+| test | 纯向量 | 56% | 100% | 0.771 | 31% | 62% | 0.480 |
+| test | **混合** | **88%** | 100% | **0.938** | **50%** | **75%** | **0.621** |
+
+混合检索在两套指标上都 ≥ 纯向量，且在更难的 test 集上提升显著（src@1 +32、ev@1 +19 个点）。
+evidence 指标明显低于 source，说明「检索到正确文档」不等于「检索到含答案的片段」——这正是该指标存在的意义。
+
+```bash
+./.venv/bin/python -m scripts.evaluate                               # dev（默认，可据此调参）
+./.venv/bin/python -m scripts.evaluate --by-type                     # 按问题类型拆分
+./.venv/bin/python -m scripts.evaluate --split test --rebuild-index  # 里程碑：干净索引，仅报告
+```
+
+> 里程碑评测务必加 `--rebuild-index`：reset Chroma 后从当前 `docs/` 重新入库再评，避免旧库污染数字。
+
+**不可答问题**（需 DeepSeek key，测系统是否会乱答）：调用问答链路，把原始回答存到
+`eval/outputs/` 供**人工复核**（启发式拒答率仅参考，不作最终判定）：
+
+```bash
+./.venv/bin/python -m scripts.evaluate_answers
+```
 
 ## 测试
 
@@ -75,13 +109,16 @@ cp .env.example .env   # 然后把 DEEPSEEK_API_KEY 填进去
 ./.venv/bin/python -m pytest -q
 ```
 
-覆盖：切分逻辑、BM25 零分过滤、**重复入库幂等**、source 相对路径去冲突、混合检索冒烟。
+覆盖：切分/BM25 过滤/幂等入库/source 去冲突/混合检索、**两套指标纯函数**
+（source_rank vs evidence_chunk_rank 的独立性回归）、**评测集完整性**
+（证据是文档子串、id 唯一、dev/test 不重叠、四类均衡）、**语料无残留 include/tab 标记**。
+共 101 项，全部离线。
 
 ## Roadmap（简历深度点，按顺序做）
 
 - [x] **P0** 混合检索：BM25 + 向量（RRF 融合），提升召回
-- [x] **P0** 评测集：真实问题标注正确来源，测 recall@k
-- [ ] **P0** 扩充文档到 30+ 篇、评测集到 40+ 条，让数字更有说服力
+- [x] **P0** 评测集：真实问题标注正确来源 + 证据，测 recall@1/3 与 MRR
+- [x] **P0** 扩充到官方 32 篇文档、52 条评测题（dev/test/unanswerable），数字更有说服力
 - [ ] **P1** rerank：对候选片段重排，对比命中率提升
 - [ ] **P1** 父子分块：小块检索、大块喂给模型
 - [ ] **P1** Redis：缓存高频 query 的答案

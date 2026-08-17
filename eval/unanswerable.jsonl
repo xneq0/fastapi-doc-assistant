@@ -1,0 +1,12 @@
+{"id": "un01", "question": "How do I enable CORS in FastAPI?", "expected_source": null, "type": "unanswerable-related", "note": "CORS 文档未收录进本知识库"}
+{"id": "un02", "question": "How do I connect FastAPI to a SQL database with SQLModel?", "expected_source": null, "type": "unanswerable-related", "note": "sql-databases 未收录"}
+{"id": "un03", "question": "How do I implement OAuth2 with JWT tokens in FastAPI?", "expected_source": null, "type": "unanswerable-related", "note": "security 系列未收录"}
+{"id": "un04", "question": "How do I add custom middleware in FastAPI?", "expected_source": null, "type": "unanswerable-related", "note": "middleware 未收录"}
+{"id": "un05", "question": "How do I load settings from environment variables with pydantic-settings?", "expected_source": null, "type": "unanswerable-related", "note": "settings 未收录"}
+{"id": "un06", "question": "How do I use WebSockets in FastAPI?", "expected_source": null, "type": "unanswerable-related", "note": "websockets 未收录"}
+{"id": "un07", "question": "How do I deploy a FastAPI app with Docker?", "expected_source": null, "type": "unanswerable-related", "note": "部署文档未收录"}
+{"id": "un08", "question": "What's the difference between async def and def path operations in FastAPI?", "expected_source": null, "type": "unanswerable-related", "note": "async/concurrency 未收录"}
+{"id": "un09", "question": "How do I train a convolutional neural network in PyTorch?", "expected_source": null, "type": "unanswerable-offtopic", "note": "与 FastAPI 无关"}
+{"id": "un10", "question": "What's the best way to center a div with CSS flexbox?", "expected_source": null, "type": "unanswerable-offtopic", "note": "与 FastAPI 无关"}
+{"id": "un11", "question": "How do I reverse a linked list in Java?", "expected_source": null, "type": "unanswerable-offtopic", "note": "与 FastAPI 无关"}
+{"id": "un12", "question": "How do I create a composite index in PostgreSQL?", "expected_source": null, "type": "unanswerable-offtopic", "note": "与 FastAPI 无关"}

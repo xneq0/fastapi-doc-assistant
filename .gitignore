@@ -5,3 +5,6 @@ __pycache__/
 data/
 .DS_Store
 .pytest_cache/
+
+.fastapi_src/
+eval/outputs/
