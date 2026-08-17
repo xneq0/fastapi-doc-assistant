@@ -34,14 +34,24 @@ def test_tokenize():
     assert _tokenize("HTTPException 422!") == ["httpexception", "422"]
 
 
-def test_bm25_filters_zero_score():
+def test_bm25_excludes_non_matching():
     corpus = [
         {"id": "a", "text": "background tasks add_task notification"},
         {"id": "b", "text": "query parameters skip limit"},
         {"id": "c", "text": "dependency injection depends"},
     ]
-    # 只有 a 含关键词，b/c 应被 score>0 过滤掉
+    # 只有 a 与 query 有 token 交集，b/c 应被过滤
     assert _bm25_rank("background add_task", corpus, top_n=10) == ["a"]
+
+
+def test_bm25_keeps_exact_match_when_idf_zero():
+    # 回归：两篇文档、query 恰好只匹配一篇时，BM25Okapi 的 IDF 会退化为 0，
+    # 精确匹配的 foo 分数为 0。按 token 交集过滤应仍保留 foo，而非返回空。
+    corpus = [
+        {"id": "foo", "text": "foo foo foo"},
+        {"id": "bar", "text": "bar bar bar"},
+    ]
+    assert _bm25_rank("foo", corpus, top_n=10) == ["foo"]
 
 
 def test_ingest_is_idempotent(tmp_path):

@@ -15,12 +15,20 @@ def _tokenize(text: str) -> list[str]:
 
 
 def _bm25_rank(query: str, corpus: list[dict], top_n: int) -> list[str]:
+    q_tokens = set(_tokenize(query))
     tokenized = [_tokenize(c["text"]) for c in corpus]
     bm25 = BM25Okapi(tokenized)
     scores = bm25.get_scores(_tokenize(query))
-    ranked = sorted(zip(corpus, scores), key=lambda x: x[1], reverse=True)
-    # 只保留有关键词匹配的文档（score>0），零匹配的不进 RRF，避免污染排序
-    return [c["id"] for c, s in ranked[:top_n] if s > 0]
+
+    # 用「query 词与文档词是否有交集」判断是否命中，而不是 score>0：
+    # BM25Okapi 的 IDF 在某些语料（如词恰好出现在一半文档）会退化为 0，
+    # 导致精确匹配也被 score>0 误过滤。有 token 交集才算真正含关键词。
+    candidates = [
+        (c, s) for c, toks, s in zip(corpus, tokenized, scores)
+        if q_tokens & set(toks)
+    ]
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    return [c["id"] for c, _ in candidates[:top_n]]
 
 
 def hybrid_search(query: str, k: int = 4, top_n: int = 10, rrf_k: int = 60) -> list[dict]:

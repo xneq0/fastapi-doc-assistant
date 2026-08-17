@@ -37,8 +37,8 @@ ollama pull nomic-embed-text
 # 3. 配置 DeepSeek key
 cp .env.example .env   # 然后把 DEEPSEEK_API_KEY 填进去
 
-# 4. 只测检索（不需要 DeepSeek key）
-./.venv/bin/python -m scripts.test_retrieval
+# 4. 手动演示检索（不需要 DeepSeek key）
+./.venv/bin/python -m scripts.demo_retrieval
 
 # 5. 启动服务
 ./.venv/bin/uvicorn app.main:app --reload
