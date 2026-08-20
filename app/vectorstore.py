@@ -44,6 +44,12 @@ def get_all() -> list[dict]:
     ]
 
 
+def get_embeddings() -> dict:
+    """只读：取出库内每个片段的向量，返回 {id: embedding}。供实验流水线做 cosine 重排用。"""
+    res = _collection.get(include=["embeddings"])
+    return {cid: emb for cid, emb in zip(res["ids"], res["embeddings"])}
+
+
 def count() -> int:
     return _collection.count()
 

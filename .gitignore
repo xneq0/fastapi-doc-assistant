@@ -8,3 +8,4 @@ data/
 
 .fastapi_src/
 eval/outputs/
+eval/rerank_cache/
