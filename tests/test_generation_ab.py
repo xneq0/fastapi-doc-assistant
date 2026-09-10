@@ -30,7 +30,8 @@ def _write_cache(out_dir, key, cid, k, answer="ans", in_tok=100, out_tok=20, lat
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps({
         "id": cid, "k": k, "cache_key": key,
-        "model": gab.config.DEEPSEEK_CHAT_MODEL, "temperature": gab.EVAL_TEMPERATURE,
+        "model": gab.EVAL_MODEL, "thinking": gab.EVAL_THINKING,
+        "max_tokens": gab.EVAL_MAX_TOKENS, "temperature": gab.EVAL_TEMPERATURE,
         "prompt_version": gab.PROMPT_VERSION, "answer": answer,
         "telemetry": {"in_tokens": in_tok, "out_tokens": out_tok, "latency": lat},
     }, ensure_ascii=False), encoding="utf-8")
@@ -81,10 +82,41 @@ def test_cache_key_sensitivity():
     assert gab.cache_key(q, "context-B") != base
     assert gab.cache_key("other-q", ctx) != base
     assert gab.cache_key(q, ctx, model="other-model") != base
-    assert gab.cache_key(q, ctx, prompt_version="genab-v2") != base
+    assert gab.cache_key(q, ctx, thinking="enabled") != base
+    assert gab.cache_key(q, ctx, max_tokens=512) != base
+    assert gab.cache_key(q, ctx, prompt_version="genab-v3") != base
     assert gab.cache_key(q, ctx, system="different") != base
     assert gab.cache_key(q, ctx, temperature=0.7) != base
     assert gab.cache_key(q, ctx) == base
+
+
+def test_experiment_id_binds_generation_config(monkeypatch):
+    dev = [{"id": "d1", "question": "q1"}]
+    plan = gab.build_plan(dev, _fake_retrieve(6))
+    mapping = {"d1": {"A": "k4", "B": "k6"}}
+    base = gab.compute_experiment_id(dev, plan, mapping, gab.AB_SEED)
+
+    monkeypatch.setattr(gab, "EVAL_THINKING", "enabled")
+    assert gab.compute_experiment_id(dev, plan, mapping, gab.AB_SEED) != base
+    monkeypatch.setattr(gab, "EVAL_THINKING", "disabled")
+    monkeypatch.setattr(gab, "EVAL_MAX_TOKENS", 512)
+    assert gab.compute_experiment_id(dev, plan, mapping, gab.AB_SEED) != base
+
+
+def test_build_citation_evidence_resolved_missing_and_unresolved():
+    refs = {"tutorial/a.md#0": "support A", "tutorial/b.md#2": "support B"}
+    resolved = gab.build_citation_evidence(
+        "answer [来源: tutorial/a.md#0, tutorial/b.md#2]", refs)
+    assert resolved == {"status": "resolved", "items": [
+        {"citation": "tutorial/a.md#0", "status": "resolved", "text": "support A"},
+        {"citation": "tutorial/b.md#2", "status": "resolved", "text": "support B"},
+    ]}
+    assert gab.build_citation_evidence("answer without citation", refs) == {
+        "status": "missing", "items": []}
+    unresolved = gab.build_citation_evidence(
+        "answer [来源：tutorial/missing.md#9] [来源: malformed]", refs)
+    assert unresolved["status"] == "unresolved"
+    assert [item["status"] for item in unresolved["items"]] == ["not_found", "invalid_format"]
 
 
 # ── A/B 平衡 12/12 ─────────────────────────────────────────────────
@@ -100,6 +132,34 @@ def test_ab_mapping_balanced_and_reproducible():
 def test_generate_answer_returns_telemetry_tuple():
     ans, i, o, lat = gab.generate_answer("s", "u", chat_fn=lambda s, u: ("A", 12, 3, 0.4))
     assert (ans, i, o, lat) == ("A", 12, 3, 0.4)
+
+
+def test_generation_config_is_eval_only_and_explicit():
+    assert gab.EVAL_MODEL == "deepseek-v4-flash"
+    assert gab.EVAL_THINKING == "disabled"
+    assert gab.EVAL_MAX_TOKENS == 1024
+
+
+def test_generate_answer_sends_frozen_v4_request(monkeypatch):
+    seen = {}
+
+    class Completions:
+        def create(self, **kwargs):
+            seen.update(kwargs)
+            usage = type("Usage", (), {"prompt_tokens": 12, "completion_tokens": 3})()
+            message = type("Message", (), {"content": "A"})()
+            choice = type("Choice", (), {"message": message})()
+            return type("Response", (), {"usage": usage, "choices": [choice]})()
+
+    client = type("Client", (), {"chat": type("Chat", (), {"completions": Completions()})()})()
+    monkeypatch.setattr(gab, "_get_client", lambda: client)
+    answer = gab.generate_answer("system", "user")
+
+    assert answer[:3] == ("A", 12, 3)
+    assert seen["model"] == gab.EVAL_MODEL
+    assert seen["temperature"] == gab.EVAL_TEMPERATURE
+    assert seen["max_tokens"] == gab.EVAL_MAX_TOKENS
+    assert seen["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
 def test_telemetry_validation_rules():
@@ -122,12 +182,23 @@ def test_cache_record_revalidation(tmp_path):
     # 空白 answer → miss
     _write_cache(tmp_path, "k2", "d1", 4, answer="   ")
     assert gab.load_answer(tmp_path, "k2", "d1", 4) is None
+    # generation config 任一不符 → miss
+    p = gab._cache_dir(tmp_path) / "k1.json"
+    rec = json.loads(p.read_text())
+    rec["thinking"] = "enabled"
+    p.write_text(json.dumps(rec), encoding="utf-8")
+    assert gab.load_answer(tmp_path, "k1", "d1", 4) is None
 
 
 # ── 评分校验 ───────────────────────────────────────────────────────
 def _good_scores(ids):
-    return [{"id": i, "a_correctness": 2, "b_correctness": 1, "a_faithfulness": 1,
-             "b_faithfulness": 0, "a_citation_correct": 1, "b_citation_correct": 0,
+    return [{"id": i, "a_correctness": 2, "b_correctness": 1,
+             "a_citation_correct": 1, "b_citation_correct": 0,
+             "reviewer_notes": ""} for i in ids]
+
+
+def _good_faith_scores(ids):
+    return [{"id": i, "a_faithfulness": 1, "b_faithfulness": 0,
              "reviewer_notes": ""} for i in ids]
 
 
@@ -138,8 +209,6 @@ def test_validate_scores():
     assert any("a_correctness" in e for e in gab.validate_scores(bad, ids))
     bad = _good_scores(ids); bad[0]["b_correctness"] = 3
     assert any("b_correctness" in e for e in gab.validate_scores(bad, ids))
-    bad = _good_scores(ids); bad[0]["a_faithfulness"] = "1"
-    assert any("a_faithfulness" in e for e in gab.validate_scores(bad, ids))
     bad = _good_scores(ids); bad[0]["b_citation_correct"] = -1
     assert any("b_citation_correct" in e for e in gab.validate_scores(bad, ids))
     bad = _good_scores(ids); del bad[0]["a_correctness"]
@@ -147,6 +216,10 @@ def test_validate_scores():
     bad = _good_scores(ids); bad[1]["id"] = "d0"
     assert any("重复" in e for e in gab.validate_scores(bad, ids))
     assert any("缺题" in e for e in gab.validate_scores(_good_scores(["d0"]), ids))
+    assert gab.validate_faithfulness_scores(_good_faith_scores(ids), ids) == []
+    bad_faith = _good_faith_scores(ids); bad_faith[0]["a_faithfulness"] = "1"
+    assert any("a_faithfulness" in e
+               for e in gab.validate_faithfulness_scores(bad_faith, ids))
 
 
 # ── mapping / packet 校验 ─────────────────────────────────────────
@@ -163,11 +236,12 @@ def test_validate_mapping():
 
 
 def _good_packet(ids):
-    tele = {"in_tokens": 100, "out_tokens": 20, "latency": 1.0}
+    evidence = {"status": "resolved", "items": [
+        {"citation": "s.md#0", "status": "resolved", "text": "support"}]}
     return [{"id": i, "question": "q", "expected_source": "s.md", "evidence_quote": "ev",
-             "answer_a": "aa", "answer_b": "bb", "source_ids_a": ["s.md#0"],
-             "source_ids_b": ["s.md#0", "s.md#1"], "context_a": "ca", "context_b": "cb",
-             "telemetry_a": dict(tele), "telemetry_b": dict(tele)} for i in ids]
+             "answer_a": "aa", "answer_b": "bb",
+             "citation_evidence_a": dict(evidence),
+             "citation_evidence_b": dict(evidence)} for i in ids]
 
 
 def test_validate_packet():
@@ -178,12 +252,12 @@ def test_validate_packet():
     assert any("answer_a" in e for e in gab.validate_packet(bad, dev))
     bad = _good_packet(ids); bad[0]["answer_b"] = 123
     assert any("answer_b" in e for e in gab.validate_packet(bad, dev))
-    bad = _good_packet(ids); bad[0]["context_a"] = None
-    assert any("context_a" in e for e in gab.validate_packet(bad, dev))
-    bad = _good_packet(ids); bad[0]["source_ids_a"] = []
-    assert any("source_ids_a" in e for e in gab.validate_packet(bad, dev))
+    bad = _good_packet(ids); bad[0]["citation_evidence_a"] = {"status": "resolved", "items": []}
+    assert any("citation_evidence_a" in e for e in gab.validate_packet(bad, dev))
+    bad = _good_packet(ids); bad[0]["reference_source_ids"] = []
+    assert any("泄露" in e for e in gab.validate_packet(bad, dev))
     bad = _good_packet(ids); bad[0]["telemetry_a"] = {"in_tokens": 1}
-    assert any("telemetry_a" in e for e in gab.validate_packet(bad, dev))
+    assert any("泄露" in e for e in gab.validate_packet(bad, dev))
     bad = _good_packet(ids); bad[1]["id"] = "d0"
     assert any("重复" in e for e in gab.validate_packet(bad, dev))
 
@@ -210,6 +284,17 @@ def test_prepare_dryrun_no_client_and_wrapped(tmp_path, monkeypatch):
     assert len(eids) == 1 and None not in eids
     status = json.loads((out / gab.STATUS_FILE).read_text())
     assert status["api_attempts"] == 0 and status["api_successes"] == 0 and status["answers_ready"] == 0
+    assert status["generation_config"] == {
+        "model": gab.EVAL_MODEL, "thinking": gab.EVAL_THINKING,
+        "max_tokens": gab.EVAL_MAX_TOKENS, "temperature": gab.EVAL_TEMPERATURE,
+    }
+    packet = json.loads((out / gab.PACKET_FILE).read_text())["packet"]
+    forbidden = {"source_ids_a", "source_ids_b", "context_a", "context_b",
+                 "telemetry_a", "telemetry_b", "reference_source_ids", "reference_context"}
+    assert all(not (forbidden & set(row)) for row in packet)
+    assert all("citation_evidence_a" in row and "citation_evidence_b" in row for row in packet)
+    assert not (out / gab.FAITH_PACKET_FILE).exists()
+    assert not (out / gab.FAITH_SCORES_FILE).exists()
 
 
 # ── 错配防护：已填评分后换 seed 再 prepare → 4 产物不变且退出非零 ──
@@ -260,23 +345,42 @@ def _full_prepare(out, monkeypatch):
     return dev, rc
 
 
+def _fill_primary_scores(out, dev, mapping=None, k6_only=False):
+    rows = []
+    for it in dev:
+        row = {"id": it["id"], "reviewer_notes": ""}
+        for side in ("a", "b"):
+            good = (not k6_only or
+                    (mapping[it["id"]][side.upper()] == "k6"))
+            row[f"{side}_correctness"] = 2 if good else 0
+            row[f"{side}_citation_correct"] = 1
+        rows.append(row)
+    obj = json.loads((out / gab.SCORES_FILE).read_text())
+    obj["scores"] = rows
+    (out / gab.SCORES_FILE).write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+
+
+def _prepare_faithfulness(out, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["p", "--prepare-faithfulness"])
+    return gab.main()
+
+
+def _fill_faith_scores(out, dev, value=1):
+    obj = json.loads((out / gab.FAITH_SCORES_FILE).read_text())
+    obj["scores"] = [{"id": it["id"], "a_faithfulness": value,
+                      "b_faithfulness": value, "reviewer_notes": ""} for it in dev]
+    (out / gab.FAITH_SCORES_FILE).write_text(
+        json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+
+
 def test_prepare_ready_then_summarize(tmp_path, monkeypatch):
     out = tmp_path / "gen_ab"
     dev, rc = _full_prepare(out, monkeypatch)
     assert rc == 0
     mapping = json.loads((out / gab.MAPPING_FILE).read_text())["mapping"]
-    scores = []
-    for it in dev:
-        m = mapping[it["id"]]; row = {"id": it["id"], "reviewer_notes": ""}
-        for side in ("a", "b"):
-            good = (m["A"] if side == "a" else m["B"]) == "k6"
-            row[f"{side}_correctness"] = 2 if good else 0
-            row[f"{side}_faithfulness"] = 1
-            row[f"{side}_citation_correct"] = 1
-        scores.append(row)
-    sc_obj = json.loads((out / gab.SCORES_FILE).read_text())
-    sc_obj["scores"] = scores
-    (out / gab.SCORES_FILE).write_text(json.dumps(sc_obj, ensure_ascii=False), encoding="utf-8")
+    _fill_primary_scores(out, dev, mapping, k6_only=True)
+    assert _prepare_faithfulness(out, monkeypatch) == 0
+    _fill_faith_scores(out, dev)
     monkeypatch.setattr(sys, "argv", ["p", "--summarize"])
     assert gab.main() == 0
     summary = json.loads((out / gab.SUMMARY_FILE).read_text())
@@ -289,17 +393,46 @@ def test_prepare_ready_then_summarize(tmp_path, monkeypatch):
     assert summary["experiment_id"] == json.loads((out / gab.PLAN_FILE).read_text())["experiment_id"]
 
 
+def test_faithfulness_stage_exposes_context_only_after_primary_lock(tmp_path, monkeypatch):
+    out = tmp_path / "gen_ab"
+    dev, _ = _full_prepare(out, monkeypatch)
+    primary = json.loads((out / gab.PACKET_FILE).read_text())["packet"]
+    assert all("context_a" not in row and "telemetry_a" not in row for row in primary)
+
+    _fill_primary_scores(out, dev)
+    assert _prepare_faithfulness(out, monkeypatch) == 0
+    faith = json.loads((out / gab.FAITH_PACKET_FILE).read_text())["packet"]
+    assert all({len(row["source_ids_a"]), len(row["source_ids_b"])} == {4, 6} for row in faith)
+    assert all("telemetry_a" not in row and "telemetry_b" not in row for row in faith)
+
+
+def test_summarize_rejects_primary_scores_changed_after_lock(tmp_path, monkeypatch):
+    out = tmp_path / "gen_ab"
+    dev, _ = _full_prepare(out, monkeypatch)
+    _fill_primary_scores(out, dev)
+    assert _prepare_faithfulness(out, monkeypatch) == 0
+    _fill_faith_scores(out, dev)
+    primary = json.loads((out / gab.SCORES_FILE).read_text())
+    primary["scores"][0]["a_correctness"] = 0
+    (out / gab.SCORES_FILE).write_text(json.dumps(primary), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["p", "--summarize"])
+    assert gab.main() == 2
+    assert not (out / gab.SUMMARY_FILE).exists()
+
+
 def test_summarize_incomplete_scores_no_summary(tmp_path, monkeypatch):
     out = tmp_path / "gen_ab"
     _full_prepare(out, monkeypatch)                        # 空白脚手架评分
-    monkeypatch.setattr(sys, "argv", ["p", "--summarize"])
+    monkeypatch.setattr(sys, "argv", ["p", "--prepare-faithfulness"])
     assert gab.main() == 2
+    assert not (out / gab.FAITH_PACKET_FILE).exists()
     assert not (out / gab.SUMMARY_FILE).exists()
 
 
 def test_summarize_experiment_id_mismatch(tmp_path, monkeypatch):
     out = tmp_path / "gen_ab"
     dev, _ = _full_prepare(out, monkeypatch)
+    _complete_two_stage_scores(out, dev, monkeypatch)
     # 篡改 scores 的 experiment_id → 不一致
     sc = json.loads((out / gab.SCORES_FILE).read_text())
     sc["experiment_id"] = "TAMPERED"
@@ -321,6 +454,10 @@ def test_cli_conflict_summarize_with_allow_api(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["p", "--summarize", "--allow-api"])
     assert gab.main() == 2
     monkeypatch.setattr(sys, "argv", ["p", "--summarize", "--force"])
+    assert gab.main() == 2
+    monkeypatch.setattr(sys, "argv", ["p", "--prepare-faithfulness", "--allow-api"])
+    assert gab.main() == 2
+    monkeypatch.setattr(sys, "argv", ["p", "--prepare-faithfulness", "--summarize"])
     assert gab.main() == 2
 
 
@@ -358,19 +495,16 @@ def test_system_prompt_matches_rag_source():
 
 
 # ── 收尾#1: 深度一致性校验 —— 篡改 plan / packet 派生字段必须失败 ────
-def _fill_valid_scores(out, dev):
-    sc = json.loads((out / gab.SCORES_FILE).read_text())
-    sc["scores"] = [{"id": it["id"], "a_correctness": 2, "b_correctness": 2,
-                     "a_faithfulness": 1, "b_faithfulness": 1,
-                     "a_citation_correct": 1, "b_citation_correct": 1,
-                     "reviewer_notes": ""} for it in dev]
-    (out / gab.SCORES_FILE).write_text(json.dumps(sc, ensure_ascii=False), encoding="utf-8")
+def _complete_two_stage_scores(out, dev, monkeypatch):
+    _fill_primary_scores(out, dev)
+    assert _prepare_faithfulness(out, monkeypatch) == 0
+    _fill_faith_scores(out, dev)
 
 
 def test_summarize_rejects_tampered_plan(tmp_path, monkeypatch):
     out = tmp_path / "gen_ab"
     dev, _ = _full_prepare(out, monkeypatch)
-    _fill_valid_scores(out, dev)
+    _complete_two_stage_scores(out, dev, monkeypatch)
     plan_obj = json.loads((out / gab.PLAN_FILE).read_text())      # 保留 experiment_id 与 4 个 ID
     plan_obj["plan"][0]["context"] = plan_obj["plan"][0]["context"] + "TAMPER"  # 只改内容
     (out / gab.PLAN_FILE).write_text(json.dumps(plan_obj, ensure_ascii=False), encoding="utf-8")
@@ -382,10 +516,11 @@ def test_summarize_rejects_tampered_plan(tmp_path, monkeypatch):
 def test_summarize_rejects_tampered_packet(tmp_path, monkeypatch):
     out = tmp_path / "gen_ab"
     dev, _ = _full_prepare(out, monkeypatch)
-    _fill_valid_scores(out, dev)
+    _complete_two_stage_scores(out, dev, monkeypatch)
     pkt = json.loads((out / gab.PACKET_FILE).read_text())
-    pkt["packet"][0]["context_a"] = "TAMPERED-CTX"                # 篡改派生 context_a
-    pkt["packet"][0]["source_ids_a"] = ["WRONG#0"]               # 篡改派生 source_ids_a
+    pkt["packet"][0]["citation_evidence_a"] = {
+        "status": "resolved", "items": [
+            {"citation": "WRONG#0", "status": "resolved", "text": "TAMPERED"}]}
     (out / gab.PACKET_FILE).write_text(json.dumps(pkt, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["p", "--summarize"])
     assert gab.main() == 2
@@ -396,7 +531,7 @@ def test_summarize_rejects_tampered_packet(tmp_path, monkeypatch):
 def test_force_rebuild_invalidates_old_summary(tmp_path, monkeypatch):
     out = tmp_path / "gen_ab"
     dev, _ = _full_prepare(out, monkeypatch)
-    _fill_valid_scores(out, dev)
+    _complete_two_stage_scores(out, dev, monkeypatch)
     monkeypatch.setattr(sys, "argv", ["p", "--summarize"])
     assert gab.main() == 0 and (out / gab.SUMMARY_FILE).exists()
     # scores 已非空白脚手架；--force 重建整套 → 旧 summary 失效
@@ -408,7 +543,7 @@ def test_force_rebuild_invalidates_old_summary(tmp_path, monkeypatch):
 def test_guard_reject_keeps_old_summary(tmp_path, monkeypatch):
     out = tmp_path / "gen_ab"
     dev, _ = _full_prepare(out, monkeypatch)
-    _fill_valid_scores(out, dev)
+    _complete_two_stage_scores(out, dev, monkeypatch)
     monkeypatch.setattr(sys, "argv", ["p", "--summarize"])
     assert gab.main() == 0 and (out / gab.SUMMARY_FILE).exists()
     # scores 非空白脚手架、无 --force → guard 拒绝，且不得动 summary

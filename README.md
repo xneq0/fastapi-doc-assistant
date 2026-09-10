@@ -86,6 +86,35 @@ cp .env.example .env   # 然后把 DEEPSEEK_API_KEY 填进去
 混合检索在两套指标上都 ≥ 纯向量，且在更难的 test 集上提升显著（src@1 +32、ev@1 +19 个点）。
 evidence 指标明显低于 source，说明「检索到正确文档」不等于「检索到含答案的片段」——这正是该指标存在的意义。
 
+### Dev-only 优化实验（未接入生产）
+
+以下结果只来自 24 题开发集，用于选择后续方向，**不是 test 泛化结论**。检索层实验衡量
+证据片段是否进入上下文，不等同于最终回答质量：
+
+| dev 配置 | evidence 命中 | ev-MRR | source 命中 | 平均上下文 token（估算） |
+|----------|---------------|--------|-------------|--------------------------|
+| hybrid@4 | 19/24（79.2%） | 0.639 | 23/24（95.8%） | 779 |
+| hybrid@6 | 21/24（87.5%） | 0.654 | 24/24（100%） | 1163 |
+| DeepSeek rerank + N-win | 23/24（95.8%） | 0.666 | 24/24（100%） | 1699 |
+
+rerank + N-win 在 dev 上把 evidence 命中从 hybrid@6 的 21/24 提高到 23/24，但每题额外需要
+一次模型调用；历史缓存记录的平均开销约为 6894 输入 token、849 输出 token 和 5.28 秒延迟。
+该结果来自旧 cache key 下的一次有效 dev 运行，当前加固后的 cache-only 模式不能复算，完整限制见
+`eval/reports/rerank_dev_report.md`。因此它仅保留为实验工具，**没有接入 `/ask` 默认链路**。
+
+随后用两阶段人工评审比较同一 hybrid 排名的 k4 与 k6 最终回答：第一阶段盲评
+correctness/citation，锁定评分后再根据各自真实上下文评 faithfulness。结果如下：
+
+| dev 配置 | overall pass | 总生成 token | 配对胜场 |
+|----------|--------------|--------------|----------|
+| hybrid@4 | 22/24（91.7%） | 25,068 | 0 |
+| hybrid@6 | 22/24（91.7%） | 34,895 | 0 |
+
+k6 的总 token 比 k4 增加 **39.2%**，双方配对胜场均为 0（k6 净胜为 0），
+未达到预先冻结的质量门槛。
+因此当前结论是**继续保留 hybrid@4 为默认值**；k6 和 rerank 均未因这些实验自动启用为生产配置。
+评审流程与防泄漏约束见 `eval/reports/generation_ab_protocol.md`。
+
 ```bash
 ./.venv/bin/python -m scripts.evaluate                               # dev（默认，可据此调参）
 ./.venv/bin/python -m scripts.evaluate --by-type                     # 按问题类型拆分
@@ -111,15 +140,15 @@ evidence 指标明显低于 source，说明「检索到正确文档」不等于�
 
 覆盖：切分/BM25 过滤/幂等入库/source 去冲突/混合检索、**两套指标纯函数**
 （source_rank vs evidence_chunk_rank 的独立性回归）、**评测集完整性**
-（证据是文档子串、id 唯一、dev/test 不重叠、四类均衡）、**语料无残留 include/tab 标记**。
-共 101 项，全部离线。
+（证据是文档子串、id 唯一、dev/test 不重叠、四类均衡）、**语料无残留 include/tab 标记**，
+以及 rerank 安全闸门、缓存校验和两阶段生成 A/B 评审流程。共 183 项，全部离线。
 
 ## Roadmap（简历深度点，按顺序做）
 
 - [x] **P0** 混合检索：BM25 + 向量（RRF 融合），提升召回
 - [x] **P0** 评测集：真实问题标注正确来源 + 证据，测 recall@1/3 与 MRR
 - [x] **P0** 扩充到官方 32 篇文档、52 条评测题（dev/test/unanswerable），数字更有说服力
-- [ ] **P1** rerank：对候选片段重排，对比命中率提升
+- [x] **P1（dev-only 实验）** rerank：验证候选重排可提升 evidence 命中；未接入生产默认链路
 - [ ] **P1** 父子分块：小块检索、大块喂给模型
 - [ ] **P1** Redis：缓存高频 query 的答案
 - [ ] **P2** Agent 路由：区分「知识问答 / API 查询」走不同路径
