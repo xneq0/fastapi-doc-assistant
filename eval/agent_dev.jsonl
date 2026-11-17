@@ -1,0 +1,20 @@
+{"id":"agent01","category":"concept","question":"FastAPI 里普通函数参数什么时候会被当成查询参数？","expected_tools":["search_docs"],"expected_source":"tutorial/query-params.md"}
+{"id":"agent02","category":"concept","question":"如何用 Pydantic 模型声明 JSON 请求体？","expected_tools":["search_docs"],"expected_source":"tutorial/body.md"}
+{"id":"agent03","category":"concept","question":"我想让用户上传文件，FastAPI 里应该怎么写？","expected_tools":["search_docs"],"expected_source":"tutorial/request-files.md"}
+{"id":"agent04","category":"concept","question":"怎样把一个目录里的静态文件通过 FastAPI 暴露出来？","expected_tools":["search_docs"],"expected_source":"tutorial/static-files.md"}
+{"id":"agent05","category":"concept","question":"怎么声明接口返回的数据类型，并让 FastAPI 按它过滤响应？","expected_tools":["search_docs"],"expected_source":"tutorial/response-model.md"}
+{"id":"agent06","category":"concept","question":"我该怎么给 FastAPI 应用写接口测试？","expected_tools":["search_docs"],"expected_source":"tutorial/testing.md"}
+{"id":"agent07","category":"concept","question":"表单接口启动时报缺少依赖，我需要安装哪个包？","expected_tools":["search_docs"],"expected_source":"tutorial/request-forms.md"}
+{"id":"agent08","category":"concept","question":"为什么用 PUT 更新时，没传的 tax 字段会被重置成默认值？","expected_tools":["search_docs"],"expected_source":"tutorial/body-updates.md"}
+{"id":"agent09","category":"signature","question":"帮我查一下 FastAPI 的 Query 参数签名。","expected_tools":["lookup_api"],"expected_name":"Query"}
+{"id":"agent10","category":"signature","question":"Depends 这个函数有哪些参数？","expected_tools":["lookup_api"],"expected_name":"Depends"}
+{"id":"agent11","category":"signature","question":"HTTPException 的构造函数签名是什么？","expected_tools":["lookup_api"],"expected_name":"HTTPException"}
+{"id":"agent12","category":"signature","question":"FastAPI.get 方法的参数签名是什么？","expected_tools":["lookup_api"],"expected_name":"FastAPI.get"}
+{"id":"agent13","category":"signature","question":"请列出 UploadFile 类的参数签名。","expected_tools":["lookup_api"],"expected_name":"UploadFile"}
+{"id":"agent14","category":"signature","question":"BackgroundTasks.add_task 方法接收哪些参数？","expected_tools":["lookup_api"],"expected_name":"BackgroundTasks.add_task"}
+{"id":"agent15","category":"mixed","question":"我想把可选查询参数 q 限制为最多 50 个字符，请根据教程说明写法，并另外给出 Query 的参数签名。","expected_tools":["search_docs","lookup_api"],"expected_source":"tutorial/query-params-str-validations.md","expected_name":"Query"}
+{"id":"agent16","category":"mixed","question":"请说明在 FastAPI 中怎样向客户端返回 404 错误，并给出 HTTPException 的构造签名。","expected_tools":["search_docs","lookup_api"],"expected_source":"tutorial/handling-errors.md","expected_name":"HTTPException"}
+{"id":"agent17","category":"mixed","question":"依赖注入里的 Depends 应该怎么用？请先根据教程解释，再列出 Depends 的参数签名。","expected_tools":["search_docs","lookup_api"],"expected_source":"tutorial/dependencies/index.md","expected_name":"Depends"}
+{"id":"agent18","category":"irrelevant","question":"东京明天会下雨吗？","expected_tools":[],"expected_behavior":"refuse"}
+{"id":"agent19","category":"irrelevant","question":"帮我写一首关于秋天的七言绝句。","expected_tools":[],"expected_behavior":"refuse"}
+{"id":"agent20","category":"irrelevant","question":"现在买哪只股票最容易赚钱？","expected_tools":[],"expected_behavior":"refuse"}

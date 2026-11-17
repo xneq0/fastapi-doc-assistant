@@ -10,7 +10,7 @@ import tempfile
 # 必须在导入 app 之前把向量库指向临时目录，避免污染真实数据
 os.environ["CHROMA_DIR"] = tempfile.mkdtemp()
 
-from app import embeddings, ingest, vectorstore, hybrid  # noqa: E402
+from app import embeddings, ingest, vectorstore, hybrid, tools  # noqa: E402
 from app.ingest import chunk_text  # noqa: E402
 from app.hybrid import _bm25_rank, _tokenize  # noqa: E402
 
@@ -96,3 +96,68 @@ def test_hybrid_search_smoke(tmp_path):
     assert hits and "source" in hits[0]
     # BM25 精确命中唯一含该关键词的文档，应排第一（不受假向量噪声影响）
     assert hits[0]["source"] == "err.md"
+
+
+def test_search_docs_returns_actual_hybrid_fields(tmp_path):
+    d = tmp_path / "docs"
+    d.mkdir()
+    (d / "err.md").write_text("Use HTTPException to return a 404 error")
+    (d / "q.md").write_text("skip and limit are query parameters")
+    (d / "body.md").write_text("send JSON request body with a Pydantic model")
+
+    vectorstore.reset()
+    ingest.ingest_dir(str(d))
+
+    expected = hybrid.hybrid_search("HTTPException", k=2)
+    result = tools.search_docs("HTTPException", k=2)
+
+    assert result
+    assert result == [
+        {"source": hit["source"], "chunk_id": hit["id"], "text": hit["text"]}
+        for hit in expected
+    ]
+    assert set(result[0]) == {"source", "chunk_id", "text"}
+
+
+def test_search_docs_k_limits_final_results(tmp_path):
+    d = tmp_path / "docs"
+    d.mkdir()
+    for i in range(4):
+        (d / f"doc-{i}.md").write_text(f"shared search term document {i}")
+
+    vectorstore.reset()
+    ingest.ingest_dir(str(d))
+
+    assert len(tools.search_docs("shared search term", k=1)) == 1
+    assert len(tools.search_docs("shared search term", k=2)) == 2
+
+
+def test_lookup_api_known_name_returns_signature():
+    result = tools.lookup_api("Query")
+
+    assert result["found"] is True
+    assert result["name"] == "Query"
+    assert result["kind"] == "function"
+    assert result["signature"].startswith("(")
+    assert isinstance(result["doc"], str)
+
+
+def test_lookup_api_supports_dotted_method():
+    result = tools.lookup_api("FastAPI.get")
+
+    assert result["found"] is True
+    assert result["name"] == "FastAPI.get"
+    assert result["kind"] == "method"
+    assert "path" in result["signature"]
+
+
+def test_lookup_api_missing_and_unsafe_names_do_not_raise():
+    missing = tools.lookup_api("Queri")
+    assert missing["found"] is False
+    assert len(missing.get("suggestions", [])) <= 3
+    assert "Query" in missing.get("suggestions", [])
+
+    for unsafe in ("os.system", "__import__"):
+        rejected = tools.lookup_api(unsafe)
+        assert rejected["found"] is False
+        assert "拒绝" in rejected["message"]

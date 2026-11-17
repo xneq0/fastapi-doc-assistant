@@ -2,7 +2,7 @@
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from . import ingest, rag, vectorstore
+from . import agent, config, ingest, rag, vectorstore
 from .config import PROJECT_ROOT
 
 app = FastAPI(title="开发者文档问答助手（RAG 问答 + 混合检索）", version="0.1.0")
@@ -15,6 +15,16 @@ class AskRequest(BaseModel):
 
 class IngestRequest(BaseModel):
     dir_path: str = "docs"
+
+
+class AgentAskRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+
+
+class AgentAskResponse(BaseModel):
+    answer: str
+    steps: int
+    trace: list[dict]
 
 
 def _safe_dir(dir_path: str) -> Path:
@@ -43,3 +53,15 @@ def do_ingest(req: IngestRequest):
 @app.post("/ask")
 def ask(req: AskRequest):
     return rag.answer(req.question, k=req.k)
+
+
+@app.post("/agent/ask", response_model=AgentAskResponse)
+def agent_ask(req: AgentAskRequest):
+    key = config.DEEPSEEK_API_KEY.strip()
+    if not key or key == "sk-你的key":
+        raise HTTPException(status_code=503, detail="DeepSeek API key 未配置")
+
+    try:
+        return agent.run_agent(req.question)
+    except Exception:  # noqa: BLE001 上游错误转换为稳定 HTTP 响应
+        raise HTTPException(status_code=502, detail="DeepSeek 上游调用失败") from None

@@ -1,27 +1,32 @@
-# 开发者文档问答助手（RAG 问答 + 混合检索）
+# 开发者文档问答助手（RAG + 混合检索 + 工具调用 Agent）
 
 基于开源项目官方文档（示例用 FastAPI 文档）构建的开发者问答系统。
-针对朴素检索召回不准的问题，引入 BM25+向量混合检索，并用自建评测集量化优化效果。
-
-> 说明：当前已实现 **RAG 问答 + 混合检索**。基于工具调用的 **Agent 路由**（区分
-> 知识问答 / API 查询）仍在 Roadmap，尚未实现，本文不将其列为已完成能力。
+当前已实现 **RAG 问答、BM25 + 向量混合检索（RRF 融合）和工具调用 Agent**，并用
+自建评测集量化检索与 Agent 工具选择效果。
 
 ## 架构
 
 ```
 用户提问
    │
-   ▼
-FastAPI (/ask)  ──►  检索(Chroma) ──► 拼上下文 ──► DeepSeek 作答(带出处)
-   ▲                     ▲
-   │                     │ 向量
-文档(docs/) ─► 切分(chunk) ─► 本地 embedding(Ollama)
+   ├─► POST /ask ─► BM25 + 向量检索 ─► RRF 融合 ─► 拼上下文 ─► DeepSeek 作答
+   │                         ▲
+   │                         │
+   └─► POST /agent/ask ─► run_agent 工具调用循环 ─► DeepSeek 选择工具 ─┐
+                              ▲                                     │
+                              ├─ search_docs ─► 复用混合检索 ────────┤
+                              └─ lookup_api ─► inspect FastAPI API ──┘
+                                     工具结果回传模型，循环至最终回答 + trace
+
+文档(docs/) ─► 切分(chunk) ─► 本地 embedding(Ollama) ─► Chroma
 ```
 
 - **后端**: FastAPI
 - **对话生成**: DeepSeek API（OpenAI 兼容）
 - **embedding**: Ollama 本地模型 `nomic-embed-text`（免费、离线，成本与 chat 分离）
 - **向量库**: Chroma（持久化到 `data/chroma`）
+- **Agent**: OpenAI 兼容 function calling；`search_docs` 用于概念/教程问题，`lookup_api`
+  用于查询 FastAPI 公开函数、类和方法的签名
 - **引用溯源**: 回答标注 `[来源: 文件名#片段号]`；通过 system prompt 约束模型
   仅依据检索片段作答、无依据时拒答，降低无依据回答（注：暂未做引用与检索来源的一致性校验）
 
@@ -55,6 +60,7 @@ cp .env.example .env   # 然后把 DEEPSEEK_API_KEY 填进去
 | GET  | /health | 健康检查 + 当前库内片段数 |
 | POST | /ingest | 导入 `docs/` 下的 .md/.txt/.pdf |
 | POST | /ask    | 提问，返回答案 + 引用来源 |
+| POST | /agent/ask | Agent 按需调用 `search_docs` / `lookup_api`，返回答案、steps 和 trace |
 
 ## 数据集
 
@@ -130,6 +136,31 @@ k6 的总 token 比 k4 增加 **39.2%**，双方配对胜场均为 0（k6 净胜
 ./.venv/bin/python -m scripts.evaluate_answers
 ```
 
+## Agent 评测
+
+`eval/agent_dev.jsonl` 是 20 题中文开发集：8 道概念/用法题期望调用 `search_docs`，6 道
+API 签名题期望调用 `lookup_api`，3 道混合题期望同时调用两个工具，另有 3 道无关题期望
+不调用工具或拒答。评测指标定义如下：
+
+- **Top-1 / 来源命中**：只统计 8 道概念题；期望 source 是否排在第一次 `search_docs`
+  返回结果首位 / 是否出现在返回结果中。
+- **必需工具召回**：每题标注的期望工具是否全部被调用。
+- **多余调用率**：是否调用了标注之外的工具。
+- **平均 steps**：每题实际执行工具的平均次数。
+
+在查看结果前，预先设定采纳门槛：英文检索词变体的 Top-1 均值须比基线至少多 **2/8**，
+且来源命中率与必需工具召回均不得下降。DeepSeek `deepseek-chat` 每组独立运行 3 次的均值如下：
+
+| Agent dev 配置 | Top-1 | 来源命中 | 必需工具召回 | 多余调用率 | 平均 steps |
+|----------------|-------|----------|----------------|--------------|------------|
+| 基线（原工具说明） | 3.33/8（41.7%） | 7.67/8（95.8%） | 100% | 13.3% | 1.45 |
+| **英文检索词（默认）** | **7.33/8（91.7%）** | **8/8（100%）** | **100%** | **11.7%** | **1.43** |
+
+英文变体 Top-1 平均提升 4 题，并满足其余预设条件，因此已设为默认；仍可通过
+`run_agent(..., english_search_query=False)` 关闭。该结论仅来自 **dev-only 小实验**：概念类只有
+8 题、每组仅 3 次运行，尚未在冻结 test 集验证，不能视为泛化结论；现有的多余工具调用问题
+也尚未专门优化。完整三次原始值见 `eval/reports/agent_english_query_dev.md`。
+
 ## 测试
 
 用假 embedding + 临时向量库，不依赖 Ollama / DeepSeek：
@@ -141,7 +172,8 @@ k6 的总 token 比 k4 增加 **39.2%**，双方配对胜场均为 0（k6 净胜
 覆盖：切分/BM25 过滤/幂等入库/source 去冲突/混合检索、**两套指标纯函数**
 （source_rank vs evidence_chunk_rank 的独立性回归）、**评测集完整性**
 （证据是文档子串、id 唯一、dev/test 不重叠、四类均衡）、**语料无残留 include/tab 标记**，
-以及 rerank 安全闸门、缓存校验和两阶段生成 A/B 评审流程。共 183 项，全部离线。
+以及 rerank 安全闸门、缓存校验、两阶段生成 A/B 评审流程、Agent 工具循环/API 与评测指标。
+共 200 项，全部离线。
 
 ## Roadmap（简历深度点，按顺序做）
 
@@ -151,5 +183,5 @@ k6 的总 token 比 k4 增加 **39.2%**，双方配对胜场均为 0（k6 净胜
 - [x] **P1（dev-only 实验）** rerank：验证候选重排可提升 evidence 命中；未接入生产默认链路
 - [ ] **P1** 父子分块：小块检索、大块喂给模型
 - [ ] **P1** Redis：缓存高频 query 的答案
-- [ ] **P2** Agent 路由：区分「知识问答 / API 查询」走不同路径
+- [x] **P2** Agent 工具调用：按问题调用文档检索或 FastAPI API 签名查询
 - [ ] **P2** MySQL：存用户问答记录；Docker 一键部署
